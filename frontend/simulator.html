@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BEAMFORM — Simulator</title>
+  <link rel="stylesheet" href="sim.css">
+</head>
+
+<body>
+
+  <!-- TOP BAR -->
+  <div class="top-bar">
+    <a href="index.html" class="logo-sm">
+      <div class="lb">⚡</div>
+      BEAMFORM
+    </a>
+    <div class="top-divider"></div>
+
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="beamforming">
+        <div class="tab-dot"></div>
+        BEAMFORMING
+      </button>
+      <button class="mode-tab" data-mode="ultrasound">
+        <div class="tab-dot"></div>
+        🩻 Ultrasound
+      </button>
+      <button class="mode-tab" data-mode="fiveg">
+        <div class="tab-dot"></div>
+        📡 5G Beamforming
+      </button>
+      <button class="mode-tab" data-mode="radar">
+        <div class="tab-dot"></div>
+        🎯 Radar
+      </button>
+    </div>
+
+    <div class="top-actions">
+      <button class="btn-small" id="btn-export" title="Export current parameters as JSON">Export JSON</button>
+      <button class="btn-small" id="btn-save-scenario" title="Save current state as scenario">💾 Save</button>
+      <a href="index.html" class="icon-btn" title="Home">⌂</a>
+    </div>
+  </div>
+
+  <!-- APP BODY -->
+  <div class="app-body">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-scroll">
+        <div class="ctrl-panel" id="ctrl-beamforming"></div>
+        <div class="ctrl-panel" id="ctrl-ultrasound"></div>
+        <div class="ctrl-panel" id="ctrl-fiveg"></div>
+        <div class="ctrl-panel" id="ctrl-radar"></div>
+      </div>
+
+      <div class="scenario-panel">
+        <div class="scenario-header">📂 Predefined Scenarios</div>
+        <div id="scenario-list"></div>
+      </div>
+    </aside>
+
+    <!-- CANVAS AREA -->
+    <div class="canvas-area">
+      <div class="canvas-header">
+        <div class="canvas-title" id="canvas-title">Ultrasound Beamforming Simulator</div>
+        <div class="status-pill" id="status-pill">LIVE</div>
+        <div style="flex:1"></div>
+        <div style="font-size:10px; color:var(--muted); letter-spacing:0.05em;" id="hint-text">
+          Drag canvas to steer &amp; focus beam · Adjust controls on left
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="sim-canvas"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast"></div>
+
+  <!--
+  SCRIPT LOAD ORDER (dependency order — do NOT rearrange):
+  1. physics.js   — MathUtils, Params, BeamformingEngine, ArrayGeometry, Physics shim
+  2. renderer.js  — Renderer class
+  3. system.js    — EventBus (Bus), StateManager, ScenarioManager
+  4. entities.js  — BaseEntity, Tower, MobileUser, Probe, RadarTarget
+                    (needs Params + BeamformingEngine from physics.js)
+  5. scenarios.js — shim only (ScenarioManager is in system.js)
+  6. modes        — each extends BaseSimulator which is defined at top of fiveg.js
+  7. app.js       — BeamformingApp orchestrator + UI helpers
+-->
+  <script>
+    // ── Sanitize localStorage before any module loads ──────────────
+    // Clears corrupt bf_scenarios data that could cause "Cannot read properties of undefined"
+    // errors in _applyScenario when scenario.params is missing.
+    (function sanitizeStorage() {
+      try {
+        const raw = localStorage.getItem('bf_scenarios');
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        const clean = {};
+        let changed = false;
+        Object.entries(parsed).forEach(([k, v]) => {
+          // Keep only scenarios with a valid mode and a params object (or migratable flat structure)
+          if (v && typeof v === 'object' && v.mode) {
+            if (!v.params && (v.towers || v.users)) {
+              // Migrate flat → wrapped
+              clean[k] = { ...v, params: { towers: v.towers || [], users: v.users || [] } };
+              changed = true;
+            } else if (v.params && typeof v.params === 'object') {
+              clean[k] = v;
+            } else {
+              changed = true; // drop invalid
+            }
+          } else {
+            changed = true; // drop invalid
+          }
+        });
+        if (changed) localStorage.setItem('bf_scenarios', JSON.stringify(clean));
+      } catch (e) {
+        // If anything is corrupt, nuke it completely so we start fresh
+        try { localStorage.removeItem('bf_scenarios'); } catch { }
+      }
+    })();
+  </script>
+  <script src="physics.js"></script>
+  <script src="renderer.js"></script>
+  <script src="system.js"></script>
+  <script src="api-client.js"></script>
+  <script src="entities.js"></script>
+  <script src="scenarios.js"></script>
+  <script src="beamforming.js"></script>
+  <script src="fiveg.js"></script>
+  <script src="ultrasound.js"></script>
+  <script src="radar.js"></script>
+  <script src="app.js"></script>
+
+  <script>
+    // ── Per-mode canvas title + pill colour ───────────────────────
+    const MODE_TITLES = {
+      beamforming: '📡 Generic Beamforming Simulator',
+      ultrasound: '🩻 Ultrasound Beamforming Simulator',
+      fiveg: '📡 5G Beamforming & User Tracking Simulator',
+      radar: '🎯 Radar Phased Array Beamforming Simulator'
+    };
+    const MODE_HINTS = {
+      ultrasound: 'Drag canvas to steer & focus beam · Adjust controls on left',
+      fiveg: 'T = tower at cursor · U = add user · E = +element (hover tower) · R = remove (hover) · Arrows = move user',
+      radar: 'Left-click scope to add targets · Right-click to remove'
+    };
+    const MODE_COLORS = {
+      ultrasound: { bg: 'rgba(0,212,255,0.1)', border: 'rgba(0,212,255,0.2)', text: 'var(--us-color)' },
+      fiveg: { bg: 'rgba(0,255,159,0.1)', border: 'rgba(0,255,159,0.2)', text: 'var(--fg-color)' },
+      radar: { bg: 'rgba(255,107,53,0.1)', border: 'rgba(255,107,53,0.2)', text: 'var(--rd-color)' }
+    };
+
+    // Patch switchMode AFTER app.js defines BeamformingApp
+    const _origSwitch = BeamformingApp.prototype.switchMode;
+    BeamformingApp.prototype.switchMode = function (modeName) {
+      _origSwitch.call(this, modeName);
+
+      const titleEl = document.getElementById('canvas-title');
+      const pillEl = document.getElementById('status-pill');
+      const hintEl = document.getElementById('hint-text');
+
+      if (titleEl) titleEl.textContent = MODE_TITLES[modeName] || modeName;
+      if (hintEl) hintEl.textContent = MODE_HINTS[modeName] || '';
+
+      if (pillEl) {
+        const c = MODE_COLORS[modeName] || MODE_COLORS.ultrasound;
+        pillEl.style.background = c.bg;
+        pillEl.style.borderColor = c.border;
+        pillEl.style.color = c.text;
+      }
+    };
+
+    // Auto-switch from URL ?mode=xxx
+    const _modeParam = new URLSearchParams(window.location.search).get('mode');
+    if (_modeParam && ['ultrasound', 'fiveg', 'radar'].includes(_modeParam)) {
+      document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(() => window._app?.switchMode(_modeParam), 120);
+      });
+    }
+  </script>
+</body>
+
+</html>
