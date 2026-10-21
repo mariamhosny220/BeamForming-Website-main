@@ -74,7 +74,7 @@ beamform/
 
 Phased array theory with 3 synchronized interactive visualizations.
 
-![Generic Beamforming Mode](Beam%20Images/Generic%20mode/Generic%20Mode.png)
+
 
 **Three Synchronized Views:**
 1. **2D Interference Field** (55% height) — Colored radiation field, main & sidelobes
